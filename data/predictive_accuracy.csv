@@ -1,5 +1,6 @@
-"{feature_level : L0_Coarse, mean_accuracy : 0.486, std : 0.172, n_reps : 20, is_control : False}"
-"{feature_level : L1_Shallow, mean_accuracy : 0.659, std : , n_reps : 1, is_control : False}"
-"{feature_level : L2_Shuffled, mean_accuracy : 0.555, std : 0.044, n_reps : 20, is_control : True}"
-"{feature_level : L2_Hist, mean_accuracy : 0.636, std : 0.083, n_reps : 20, is_control : False}"
-"{feature_level : L3_FullRich, mean_accuracy : 0.612, std : , n_reps : 1, is_control : False}"
+feature_level,mean_accuracy,std,n_reps,is_control
+L0_Coarse,0.486,0.172,20,false
+L1_Shallow,0.659,,1,false
+L2_Shuffled,0.555,0.044,20,true
+L2_Hist,0.636,0.083,20,false
+L3_FullRich,0.612,,1,false

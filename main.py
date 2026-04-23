@@ -18,6 +18,59 @@ def _load_csv(name: str) -> pd.DataFrame | None:
     return pd.read_csv(path)
 
 
+def _parse_assoc_text_row(text: str) -> dict[str, object]:
+    # Handles rows like: {feature_level : L0_Coarse, mean_accuracy : 0.486, ...}
+    raw = text.strip().strip('"').strip().strip("{").strip("}")
+    fields = [item.strip() for item in raw.split(",")]
+    out: dict[str, object] = {}
+    for field in fields:
+        if ":" not in field:
+            continue
+        key, value = field.split(":", 1)
+        key = key.strip().strip('"')
+        value = value.strip().strip('"')
+        if value == "":
+            out[key] = np.nan
+        elif value in {"True", "False"}:
+            out[key] = value == "True"
+        else:
+            try:
+                out[key] = float(value)
+            except ValueError:
+                out[key] = value
+    return out
+
+
+def _normalize_accuracy_df(df: pd.DataFrame) -> pd.DataFrame:
+    required = {"feature_level", "mean_accuracy", "std", "n_reps", "is_control"}
+    if required.issubset(df.columns):
+        out = df.copy()
+    elif len(df.columns) == 1:
+        # Mathematica export fallback where each row is an association-like string.
+        lone_col = df.columns[0]
+        row_texts = [str(lone_col)] + df.iloc[:, 0].astype(str).tolist()
+        parsed = [_parse_assoc_text_row(text) for text in row_texts]
+        parsed = [row for row in parsed if row]
+        out = pd.DataFrame(parsed)
+    else:
+        return _demo_accuracy()
+
+    # Enforce expected dtypes and defaults.
+    if "feature_level" not in out.columns:
+        return _demo_accuracy()
+    out["mean_accuracy"] = pd.to_numeric(out.get("mean_accuracy"), errors="coerce")
+    out["std"] = pd.to_numeric(out.get("std"), errors="coerce")
+    out["n_reps"] = pd.to_numeric(out.get("n_reps"), errors="coerce").fillna(1).astype(int)
+    if "is_control" in out.columns:
+        out["is_control"] = out["is_control"].astype(str).str.lower().map({"true": True, "false": False}).fillna(False)
+    else:
+        out["is_control"] = False
+    out = out.dropna(subset=["feature_level", "mean_accuracy"])
+    if out.empty:
+        return _demo_accuracy()
+    return out
+
+
 def _demo_lifecycle() -> pd.DataFrame:
     generations = np.arange(0, 9)
     levels = ["L0_Coarse", "L1_Shallow", "L2_Hist", "L3_FullRich"]
@@ -92,7 +145,7 @@ def load_data() -> tuple[dict[str, pd.DataFrame], dict[str, bool]]:
     }
     data = {
         "lifecycle": lifecycle if lifecycle is not None else _demo_lifecycle(),
-        "accuracy": accuracy if accuracy is not None else _demo_accuracy(),
+        "accuracy": _normalize_accuracy_df(accuracy) if accuracy is not None else _demo_accuracy(),
         "coarse_rich": coarse_rich if coarse_rich is not None else _demo_coarse_rich(),
         "embedding": embedding if embedding is not None else _demo_embedding(),
     }
