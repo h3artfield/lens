@@ -981,7 +981,7 @@ def _compute_agency_leverage_for_seed(
                 "norm_rich_entropy": float(norm_rich),
                 "norm_coarse_entropy": float(norm_coarse),
                 "norm_entropy_gap": float(norm_rich - norm_coarse),
-                "rich_to_coarse_entropy_ratio": float(norm_rich / norm_coarse) if norm_coarse > 0 else 0.0,
+                "rich_to_coarse_entropy_ratio": float(norm_rich / norm_coarse) if norm_coarse > 0 else np.nan,
                 "rich_counts_repr": str(rich_counts),
                 "coarse_counts_repr": str(coarse_counts),
             }
@@ -1155,18 +1155,28 @@ def render_section_bridge(title: str, explanation: str) -> None:
     st.write(explanation)
 
 
-def sidebar_controls(source_count: int) -> tuple[int, str]:
+def sidebar_controls(source_count: int, total_sources: int) -> tuple[int, str, bool, bool, bool]:
     st.sidebar.header("Controls")
-    depth = st.sidebar.slider("Generation depth", min_value=4, max_value=12, value=8, step=1)
+    view_mode = st.sidebar.radio("Page mode", ["Guided walkthrough (fast)", "Research mode (full)"], index=0)
+    compute_mode = st.sidebar.radio(
+        "Compute profile",
+        ["Light demo (faster)", "Full fidelity (slower)"],
+        index=0,
+        help="Light mode reduces heavy-simulation defaults and optional replicate volume for smoother demos.",
+    )
+    depth = st.sidebar.slider("Generation depth", min_value=4, max_value=12, value=7, step=1)
     selector = st.sidebar.selectbox("Selector policy", ["All", "OneRandom", "TwoRandom"], index=0)
+    show_evidence = st.sidebar.checkbox("Show notebook evidence gallery", value=False)
+    show_advanced = view_mode == "Research mode (full)"
+    light_mode = compute_mode == "Light demo (faster)"
     st.sidebar.markdown("---")
     if source_count == 0:
         st.sidebar.info("Showing demo data. Add CSVs in `data/` to switch to real experiment outputs.")
-    elif source_count < 4:
-        st.sidebar.warning(f"Using mixed mode: {source_count}/4 datasets are real CSV exports.")
+    elif source_count < total_sources:
+        st.sidebar.warning(f"Using mixed mode: {source_count}/{total_sources} datasets are real CSV exports.")
     else:
         st.sidebar.success("Using your CSV exports from `data/` for all visualizations.")
-    return depth, selector
+    return depth, selector, show_advanced, show_evidence, light_mode
 
 
 def render_story(depth: int, selector: str) -> None:
@@ -1179,6 +1189,76 @@ def render_story(depth: int, selector: str) -> None:
         - **Main takeaway:** the most useful view is usually the **best middle resolution**, not the most detailed one.
         """
     )
+
+
+def render_overview_abstract(depth: int, selector: str) -> None:
+    st.subheader("Overview and Abstract")
+    st.markdown(
+        """
+        **Plain-English abstract**
+
+        Heartfield Geometry studies how symbolic rewrite systems first branch into many possibilities,
+        then collapse back into a smaller set of stable outcomes. The key claim is that the best
+        predictive view is usually a middle-resolution feature level, not the coarsest or richest
+        representation.
+        """
+    )
+    render_story(depth, selector)
+    st.markdown(
+        """
+        **Key propositions**
+        - Expansion and reconvergence coexist in the same rewrite process.
+        - Feature hierarchy changes what structure is visible.
+        - Intermediate (historical) features often maximize predictive signal.
+        """
+    )
+
+
+def render_setup_feature_hierarchy_tab(accuracy: pd.DataFrame, coarse_rich: pd.DataFrame) -> None:
+    st.subheader("Setup and Feature Hierarchy")
+    st.write("Use this table to understand each feature level before looking at dynamics and predictive charts.")
+    hierarchy = pd.DataFrame(
+        [
+            {"feature_level": "L0_Coarse", "description": "High compression, lowest detail", "expected_strength": "Fast global trend"},
+            {"feature_level": "L1_Shallow", "description": "Shallow symbolic signature", "expected_strength": "Simple local structure"},
+            {"feature_level": "L2_Hist", "description": "Historical/context-aware tuple", "expected_strength": "Best middle-line predictor"},
+            {"feature_level": "L3_FullRich", "description": "Maximum detail feature tuple", "expected_strength": "High detail, higher variance"},
+        ]
+    )
+    st.dataframe(hierarchy, use_container_width=True)
+    level_pick = st.selectbox("Inspect a feature level", hierarchy["feature_level"].tolist(), index=2)
+    row = hierarchy[hierarchy["feature_level"] == level_pick].iloc[0]
+    st.info(f"{level_pick}: {row['description']} -> Typical role: {row['expected_strength']}.")
+    st.markdown("**Observed performance table**")
+    st.dataframe(accuracy[["feature_level", "mean_accuracy", "std", "n_reps", "is_control"]], use_container_width=True)
+    st.markdown("**Distinctness and entropy context**")
+    st.dataframe(coarse_rich, use_container_width=True)
+
+
+def render_predictive_power_tab(accuracy: pd.DataFrame, is_real: bool) -> None:
+    st.subheader("Predictive Power")
+    st.caption("Source: Mathematica export CSV" if is_real else "Source: technical-note seeded/demo fallback")
+    levels = accuracy["feature_level"].dropna().astype(str).unique().tolist()
+    default_levels = [lvl for lvl in levels if "Shuffled" not in lvl] or levels
+    selected_levels = st.multiselect("Feature levels to display", levels, default=default_levels)
+    work = accuracy[accuracy["feature_level"].isin(selected_levels)].copy()
+    if work.empty:
+        st.warning("Select at least one feature level.")
+        return
+    work["group"] = np.where(work["is_control"], "Control", "Primary")
+    fig = px.bar(
+        work,
+        x="feature_level",
+        y="mean_accuracy",
+        color="group",
+        error_y="std",
+        title="Prediction accuracy by feature level",
+        text="n_reps",
+    )
+    fig.update_traces(texttemplate="n=%{text}", textposition="outside")
+    fig.update_layout(yaxis_range=[0, 1])
+    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(work.drop(columns=["group"]), use_container_width=True)
 
 
 def render_lifecycle(lifecycle: pd.DataFrame, is_real: bool) -> None:
@@ -1463,15 +1543,15 @@ def render_update_model_section(single_mode_rows: pd.DataFrame, rank_rows: pd.Da
         st.dataframe(single_mode_rows.head(20).round(6), use_container_width=True)
 
 
-def render_state_feature_geometry_section() -> None:
+def render_state_feature_geometry_section(light_mode: bool = True) -> None:
     st.subheader("State Feature Geometry (Python Rewrite Engine)")
     st.caption("Reconstruction of the Mathematica state-feature PCA and neighborhood geometry workflow.")
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        n_starts = st.slider("Random starts", min_value=4, max_value=40, value=12, step=2)
+        n_starts = st.slider("Random starts", min_value=4, max_value=(24 if light_mode else 40), value=(8 if light_mode else 12), step=2)
     with c2:
-        depth = st.slider("Rewrite depth", min_value=2, max_value=6, value=4, step=1)
+        depth = st.slider("Rewrite depth", min_value=2, max_value=(5 if light_mode else 6), value=(3 if light_mode else 4), step=1)
     with c3:
         selector = st.selectbox("Selector", ["All", "OneRandom", "TwoRandom", "Half", "First", "Last"], index=0)
     c4, c5, c6 = st.columns(3)
@@ -1480,7 +1560,13 @@ def render_state_feature_geometry_section() -> None:
     with c5:
         leaf_max = st.slider("Leaf max", min_value=4, max_value=10, value=8, step=1)
     with c6:
-        per_op_cap = st.slider("Max states per operator", min_value=30, max_value=300, value=120, step=10)
+        per_op_cap = st.slider(
+            "Max states per operator",
+            min_value=30,
+            max_value=(160 if light_mode else 300),
+            value=(80 if light_mode else 120),
+            step=10,
+        )
     seed = st.number_input("Seed", min_value=0, max_value=10_000_000, value=12345, step=1)
 
     if leaf_max < leaf_min:
@@ -1744,7 +1830,7 @@ def render_state_feature_geometry_section() -> None:
         st.dataframe(geo_df.head(60), use_container_width=True)
 
 
-def render_cone_averages_section() -> None:
+def render_cone_averages_section(light_mode: bool = True) -> None:
     st.subheader("Cone Averages Across Seeds (Python)")
     st.caption("Operator/layer averages with old-vs-rich tuple distinctness and normalized cone diagnostics.")
 
@@ -1752,9 +1838,9 @@ def render_cone_averages_section() -> None:
     with c1:
         seed_start = st.number_input("Seed start", min_value=0, max_value=10_000_000, value=12345, step=1)
     with c2:
-        n_seeds = st.slider("Number of seeds", min_value=3, max_value=30, value=12, step=1)
+        n_seeds = st.slider("Number of seeds", min_value=3, max_value=(12 if light_mode else 30), value=(6 if light_mode else 12), step=1)
     with c3:
-        depth = st.slider("Cone avg depth", min_value=3, max_value=8, value=8, step=1)
+        depth = st.slider("Cone avg depth", min_value=3, max_value=(6 if light_mode else 8), value=(5 if light_mode else 8), step=1)
     with c4:
         leaf_count = st.slider("Cone avg leaf count", min_value=4, max_value=8, value=6, step=1)
     selector = st.selectbox("Cone avg selector", ["All", "OneRandom", "TwoRandom", "Half", "First", "Last"], index=0)
@@ -1883,7 +1969,7 @@ def render_cone_averages_section() -> None:
         st.plotly_chart(coarse_rich_fig, use_container_width=True)
 
 
-def render_terminal_entropy_section() -> None:
+def render_terminal_entropy_section(light_mode: bool = True) -> None:
     st.subheader("Terminal Entropy and Pluralism")
     st.caption("Python reconstruction of rich/coarse terminal entropy, dominance, and normalized entropy gap by layer.")
 
@@ -1891,12 +1977,17 @@ def render_terminal_entropy_section() -> None:
     with t1:
         seed_start = st.number_input("Entropy seed start", min_value=0, max_value=10_000_000, value=12345, step=1)
     with t2:
-        n_seeds = st.slider("Entropy seeds", min_value=2, max_value=20, value=8, step=1)
+        n_seeds = st.slider("Entropy seeds", min_value=2, max_value=(10 if light_mode else 20), value=(4 if light_mode else 8), step=1)
     with t3:
-        max_depth = st.slider("Entropy max depth", min_value=4, max_value=10, value=8, step=1)
+        max_depth = st.slider("Entropy max depth", min_value=4, max_value=(8 if light_mode else 10), value=(6 if light_mode else 8), step=1)
     with t4:
         leaf_count = st.slider("Entropy leaf count", min_value=4, max_value=8, value=6, step=1)
     selector = st.selectbox("Entropy selector", ["All", "OneRandom", "TwoRandom", "Half", "First", "Last"], index=0)
+    if selector in {"OneRandom", "First", "Last"}:
+        st.info(
+            "Selected entropy selector follows a mostly single-path trajectory. "
+            "Flat entropy/dominance lines are expected in this deterministic setting."
+        )
 
     frames = []
     for op in ["ExpMinusLog", "ExpPlusLog", "XMinusLog"]:
@@ -1932,7 +2023,9 @@ def render_terminal_entropy_section() -> None:
     f2.update_layout(yaxis_range=[0, 1.05])
     st.plotly_chart(f2, use_container_width=True)
     f3 = px.line(avg, x="layer", y="rich_to_coarse_entropy_ratio", color="operator", markers=True, title="Rich/Coarse entropy ratio")
-    f3.update_layout(yaxis_range=[0, max(1.05, float(avg["rich_to_coarse_entropy_ratio"].max()) * 1.05)])
+    ratio_non_na = pd.to_numeric(avg["rich_to_coarse_entropy_ratio"], errors="coerce").dropna()
+    if not ratio_non_na.empty:
+        f3.update_layout(yaxis_range=[0, max(1.05, float(ratio_non_na.max()) * 1.05)])
     st.plotly_chart(f3, use_container_width=True)
 
     op_pick = st.selectbox("Entropy coarse-vs-rich operator", ["ExpMinusLog", "ExpPlusLog", "XMinusLog"], index=0)
@@ -2041,7 +2134,7 @@ def render_ablation_section(ablation_rows: pd.DataFrame, is_real: bool) -> None:
         st.dataframe(work.sort_values(["feature_level", "layer"]), use_container_width=True)
 
 
-def render_prediction_control_section(l2_reps: pd.DataFrame, is_real: bool) -> None:
+def render_prediction_control_section(l2_reps: pd.DataFrame, is_real: bool, light_mode: bool = True) -> None:
     st.subheader("L2 Prediction Control Replicates")
     st.caption(
         "Source: Mathematica replicate export"
@@ -2057,6 +2150,9 @@ def render_prediction_control_section(l2_reps: pd.DataFrame, is_real: bool) -> N
     for c in ["L1_Shallow", "L2_Shuffled", "L2_Hist"]:
         reps[c] = pd.to_numeric(reps[c], errors="coerce")
     reps = reps.dropna(subset=["L1_Shallow", "L2_Shuffled", "L2_Hist"])
+    if light_mode and len(reps) > 8:
+        reps = reps.head(8).copy()
+        st.caption("Light demo mode: using first 8 replicates for faster rendering.")
 
     summary = pd.DataFrame(
         [
@@ -2241,74 +2337,91 @@ def render_mathematica_evidence() -> None:
 def main() -> None:
     page_header()
     data, sources = load_data()
-    depth, selector = sidebar_controls(sum(sources.values()))
+    depth, selector, show_advanced, show_evidence, light_mode = sidebar_controls(sum(sources.values()), len(sources))
     render_reader_guide()
+    if not show_advanced:
+        st.success("Fast guided mode is active. Heavy diagnostics stay hidden unless you switch to Research mode.")
+
+    tabs = st.tabs(
+        [
+            "Overview & Abstract",
+            "Setup & Feature Hierarchy",
+            "Dynamics Explorer",
+            "Geometric Spread & Controls",
+            "Predictive Power",
+            "Operator Separation",
+        ]
+    )
+
+    with tabs[0]:
+        render_section_bridge(
+            "What is the core idea?",
+            "This tab gives a plain-English abstract and the main propositions from the paper-level narrative.",
+        )
+        render_overview_abstract(depth, selector)
+        if show_evidence:
+            render_mathematica_evidence()
+
+    with tabs[1]:
+        render_section_bridge(
+            "How is the system set up?",
+            "This tab explains the feature hierarchy and lets you inspect each level with an interactive table.",
+        )
+        render_setup_feature_hierarchy_tab(data["accuracy"], data["coarse_rich"])
+
+    with tabs[2]:
+        render_section_bridge(
+            "How do the dynamics evolve?",
+            "This tab focuses on lifecycle curves and the N/C/P dynamic traces.",
+        )
+        render_lifecycle(data["lifecycle"], sources["lifecycle"])
+        with st.spinner("Rendering dynamics diagnostics..."):
+            render_operator_trace_reconstruction(data["operator_traces"], sources["operator_traces"])
+            render_update_model_section(data["single_mode_rows"], data["rank_rows"], data["three_mode_rows"])
+
+    with tabs[3]:
+        render_section_bridge(
+            "How does spread compare with controls?",
+            "This tab compares geometric spread, ablations, and shuffled-control behavior.",
+        )
+        with st.spinner("Building spread/control views..."):
+            render_coarse_vs_rich(data["coarse_rich"], sources["coarse_rich"])
+            render_ablation_section(data["ablation_rows"], sources["ablation_rows"])
+            render_prediction_control_section(data["l2_replicates"], sources["l2_replicates"], light_mode=light_mode)
+
+    with tabs[4]:
+        render_section_bridge(
+            "Which features predict best?",
+            "This tab isolates predictive performance so visitors can compare feature levels directly.",
+        )
+        render_predictive_power_tab(data["accuracy"], sources["accuracy"])
+        render_resolution_selector(data["accuracy"])
+
+    with tabs[5]:
+        render_section_bridge(
+            "Do operators separate into distinct structure?",
+            "This tab shows embeddings and, in Research mode, deeper geometric/entropy diagnostics.",
+        )
+        render_embedding_3d(data["embedding"], sources["embedding"])
+        if show_advanced:
+            progress = st.progress(0, text="Running advanced operator analyses...")
+            with st.spinner("Computing state-feature geometry..."):
+                render_state_feature_geometry_section(light_mode=light_mode)
+            progress.progress(33, text="Computed state-feature geometry")
+            with st.spinner("Computing cone averages..."):
+                render_cone_averages_section(light_mode=light_mode)
+            progress.progress(66, text="Computed cone averages")
+            with st.spinner("Computing terminal entropy diagnostics..."):
+                render_terminal_entropy_section(light_mode=light_mode)
+                render_heartfield_law_section(data["heartfield_diff"], data["persistence"])
+                render_tuple_ladder_section()
+            progress.progress(100, text="Advanced analyses complete")
+        else:
+            st.info("Switch to Research mode to load advanced operator separation diagnostics.")
 
     st.divider()
-    st.header("Phase 1 - Idea and First Principles")
-    render_section_bridge(
-        "What was the original idea?",
-        "This section introduces the hypothesis: symbolic rewrite systems expand rapidly, then reconverge, and that reconvergence depends on observation scale.",
-    )
-    render_story(depth, selector)
-
-    st.divider()
-    st.header("Phase 2 - Early Dynamics and Evidence")
-    render_section_bridge(
-        "What happens as the system evolves?",
-        "These plots show growth, spread, and first evidence that behavior changes with representation level.",
-    )
-    render_lifecycle(data["lifecycle"], sources["lifecycle"])
-    render_accuracy(data["accuracy"], sources["accuracy"])
-    render_operator_trace_reconstruction(data["operator_traces"], sources["operator_traces"])
-
-    st.divider()
-    st.header("Phase 3 - Deriving the Heartfield Law")
-    render_section_bridge(
-        "How did the idea become a model?",
-        "Here the app converts trace behavior into fitted relationships and simulation updates, moving from concept to explicit equations.",
-    )
-    render_heartfield_law_section(data["heartfield_diff"], data["persistence"])
-    render_update_model_section(data["single_mode_rows"], data["rank_rows"], data["three_mode_rows"])
-
-    st.divider()
-    st.header("Phase 4 - Resolution Tests and Controls")
-    render_section_bridge(
-        "Which feature level actually works best?",
-        "Ablation and control analyses compare coarse, shallow, historical, and fully rich views to test predictive usefulness.",
-    )
-    render_ablation_section(data["ablation_rows"], sources["ablation_rows"])
-    render_prediction_control_section(data["l2_replicates"], sources["l2_replicates"])
-
-    st.divider()
-    st.header("Phase 5 - Geometry of Reconvergence")
-    render_section_bridge(
-        "Where do trajectories go in state-space?",
-        "These sections visualize neighborhoods, cones, and entropy so you can see reconvergence geometry rather than only reading summary statistics.",
-    )
-    render_state_feature_geometry_section()
-    render_cone_averages_section()
-    render_terminal_entropy_section()
-    render_tuple_ladder_section()
-
-    st.divider()
-    st.header("Phase 6 - Final Synthesis")
-    render_section_bridge(
-        "What does this mean in practical terms?",
-        "Final summaries combine divergence, 3D embedding, and resolution recommendation into a clear statement of the current model state.",
-    )
-    render_coarse_vs_rich(data["coarse_rich"], sources["coarse_rich"])
-    render_embedding_3d(data["embedding"], sources["embedding"])
-    render_resolution_selector(data["accuracy"])
-
-    st.divider()
-    st.header("Traceability and Reproducibility")
-    render_section_bridge(
-        "How do we verify this development path?",
-        "The evidence gallery and schema contract make it clear how notebook artifacts map to the Python app and deployment data.",
-    )
-    render_mathematica_evidence()
-    render_data_contract()
+    with st.expander("Data contract and reproducibility"):
+        render_data_contract()
 
 
 if __name__ == "__main__":
