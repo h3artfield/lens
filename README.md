@@ -20,6 +20,19 @@ Drop experiment CSV exports in `data/`:
 
 If files are missing, the app runs in demo mode.
 
+## Mathematica handoff (before trial ends)
+
+1. Open your working notebook and evaluate the cells that produce your final variables.
+2. Copy `mathematica_export_for_streamlit.wl` into the same folder as the notebook (or set notebook directory to this repo root).
+3. Evaluate:
+
+```wolfram
+Get["mathematica_export_for_streamlit.wl"]
+```
+
+4. Confirm CSVs appear in `data/`.
+5. Re-run Streamlit and visuals will switch from demo to exported values automatically.
+
 ## Deploy on Streamlit Community Cloud
 
 1. Push this repo to GitHub.

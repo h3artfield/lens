@@ -79,18 +79,24 @@ def _demo_embedding() -> pd.DataFrame:
     return pd.DataFrame(points)
 
 
-def load_data() -> dict[str, pd.DataFrame]:
+def load_data() -> tuple[dict[str, pd.DataFrame], dict[str, bool]]:
     lifecycle = _load_csv("lifecycle_by_level.csv")
     accuracy = _load_csv("predictive_accuracy.csv")
     coarse_rich = _load_csv("coarse_rich_divergence.csv")
     embedding = _load_csv("embedding_points.csv")
-
-    return {
+    sources = {
+        "lifecycle": lifecycle is not None,
+        "accuracy": accuracy is not None,
+        "coarse_rich": coarse_rich is not None,
+        "embedding": embedding is not None,
+    }
+    data = {
         "lifecycle": lifecycle if lifecycle is not None else _demo_lifecycle(),
         "accuracy": accuracy if accuracy is not None else _demo_accuracy(),
         "coarse_rich": coarse_rich if coarse_rich is not None else _demo_coarse_rich(),
         "embedding": embedding if embedding is not None else _demo_embedding(),
     }
+    return data, sources
 
 
 def page_header() -> None:
@@ -101,15 +107,17 @@ def page_header() -> None:
     )
 
 
-def sidebar_controls(data_source_demo: bool) -> tuple[int, str]:
+def sidebar_controls(source_count: int) -> tuple[int, str]:
     st.sidebar.header("Controls")
     depth = st.sidebar.slider("Generation depth", min_value=4, max_value=12, value=8, step=1)
     selector = st.sidebar.selectbox("Selector policy", ["All", "OneRandom", "TwoRandom"], index=0)
     st.sidebar.markdown("---")
-    if data_source_demo:
-        st.sidebar.info("Showing demo data. Drop CSVs in `data/` to use experiment exports.")
+    if source_count == 0:
+        st.sidebar.info("Showing demo data. Add CSVs in `data/` to switch to real experiment outputs.")
+    elif source_count < 4:
+        st.sidebar.warning(f"Using mixed mode: {source_count}/4 datasets are real CSV exports.")
     else:
-        st.sidebar.success("Using your CSV exports from `data/`.")
+        st.sidebar.success("Using your CSV exports from `data/` for all visualizations.")
     return depth, selector
 
 
@@ -125,8 +133,9 @@ def render_story(depth: int, selector: str) -> None:
     )
 
 
-def render_lifecycle(lifecycle: pd.DataFrame) -> None:
+def render_lifecycle(lifecycle: pd.DataFrame, is_real: bool) -> None:
     st.subheader("Lifecycle and Geometric Spread")
+    st.caption("Source: Mathematica export CSV" if is_real else "Source: demo placeholder until CSV is exported")
     c1, c2 = st.columns([2, 1])
     with c1:
         fig = px.line(
@@ -143,8 +152,9 @@ def render_lifecycle(lifecycle: pd.DataFrame) -> None:
         st.dataframe(pivot.round(2), use_container_width=True)
 
 
-def render_accuracy(accuracy: pd.DataFrame) -> None:
+def render_accuracy(accuracy: pd.DataFrame, is_real: bool) -> None:
     st.subheader("Predictive Accuracy and Controls")
+    st.caption("Source: Mathematica export CSV" if is_real else "Source: technical-note seeded/demo fallback")
     accuracy = accuracy.copy()
     accuracy["group"] = np.where(accuracy["is_control"], "Control", "Primary")
     fig = px.bar(
@@ -162,8 +172,9 @@ def render_accuracy(accuracy: pd.DataFrame) -> None:
     st.dataframe(accuracy.drop(columns=["group"]), use_container_width=True)
 
 
-def render_coarse_vs_rich(coarse_rich: pd.DataFrame) -> None:
+def render_coarse_vs_rich(coarse_rich: pd.DataFrame, is_real: bool) -> None:
     st.subheader("Coarse vs Rich Divergence")
+    st.caption("Source: Mathematica export CSV" if is_real else "Source: demo placeholder until CSV is exported")
     c1, c2 = st.columns(2)
     with c1:
         melt = coarse_rich.melt(
@@ -200,8 +211,9 @@ def render_coarse_vs_rich(coarse_rich: pd.DataFrame) -> None:
         st.plotly_chart(fig2, use_container_width=True)
 
 
-def render_embedding_3d(embedding: pd.DataFrame) -> None:
+def render_embedding_3d(embedding: pd.DataFrame, is_real: bool) -> None:
     st.subheader("3D Branch-Space Render")
+    st.caption("Source: Mathematica export CSV" if is_real else "Source: demo operator clouds")
     fig = px.scatter_3d(
         embedding,
         x="x",
@@ -254,19 +266,13 @@ def render_data_contract() -> None:
 
 def main() -> None:
     page_header()
-    data = load_data()
-    using_demo = not all((DATA_DIR / p).exists() for p in [
-        "lifecycle_by_level.csv",
-        "predictive_accuracy.csv",
-        "coarse_rich_divergence.csv",
-        "embedding_points.csv",
-    ])
-    depth, selector = sidebar_controls(using_demo)
+    data, sources = load_data()
+    depth, selector = sidebar_controls(sum(sources.values()))
     render_story(depth, selector)
-    render_lifecycle(data["lifecycle"])
-    render_accuracy(data["accuracy"])
-    render_coarse_vs_rich(data["coarse_rich"])
-    render_embedding_3d(data["embedding"])
+    render_lifecycle(data["lifecycle"], sources["lifecycle"])
+    render_accuracy(data["accuracy"], sources["accuracy"])
+    render_coarse_vs_rich(data["coarse_rich"], sources["coarse_rich"])
+    render_embedding_3d(data["embedding"], sources["embedding"])
     render_resolution_selector(data["accuracy"])
     render_data_contract()
 
