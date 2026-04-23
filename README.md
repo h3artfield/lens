@@ -17,8 +17,17 @@ Drop experiment CSV exports in `data/`:
 - `predictive_accuracy.csv`
 - `coarse_rich_divergence.csv`
 - `embedding_points.csv`
+- `operator_trace_rows.csv`
 
 If files are missing, the app runs in demo mode.
+
+## Add notebook screenshots
+
+To include Mathematica screenshots in the app and in Streamlit Cloud deploys, put image files in:
+
+- `assets/evidence/`
+
+They will appear in the "Mathematica Evidence Gallery" section automatically.
 
 ## Mathematica handoff (before trial ends)
 
