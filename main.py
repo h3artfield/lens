@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import re
 
@@ -595,7 +596,9 @@ def _compute_operator_geometry(
     depth: int,
     selector: str,
     per_operator_cap: int,
+    refresh_nonce: int = 0,
 ) -> pd.DataFrame:
+    _ = refresh_nonce
     rng = np.random.default_rng(seed)
     starts = [_random_plus_tree(int(rng.integers(leaf_min, leaf_max + 1)), rng) for _ in range(n_starts)]
     rows: list[dict[str, float | str]] = []
@@ -638,8 +641,9 @@ def _compute_operator_geometry(
 
 @st.cache_data(show_spinner=False)
 def _compute_causal_projection(
-    seed: int, operator_name: str, depth: int, selector: str, leaf_count: int
+    seed: int, operator_name: str, depth: int, selector: str, leaf_count: int, refresh_nonce: int = 0
 ) -> tuple[pd.DataFrame, list[tuple[int, int]]]:
+    _ = refresh_nonce
     rng = np.random.default_rng(seed)
     start = _random_plus_tree(leaf_count, rng)
     op_func = OPERATOR_LIBRARY_AST[operator_name]
@@ -989,6 +993,36 @@ def _knn_edges(points: np.ndarray, k: int) -> list[tuple[int, int]]:
             a, b = sorted((int(i), int(j)))
             edges.add((a, b))
     return sorted(edges)
+
+
+def _normal_two_tailed_p_from_z(z_score: float) -> float:
+    # Normal approximation is sufficient for the replicate sample sizes used here.
+    return float(math.erfc(abs(float(z_score)) / math.sqrt(2.0)))
+
+
+def _safe_histogram_bins(values: np.ndarray) -> int:
+    vals = np.asarray(values, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    if vals.size <= 1:
+        return 10
+    std = float(np.std(vals, ddof=1))
+    if std <= 1e-9:
+        return 10
+    # More variance -> more bins, while keeping the chart legible.
+    bins = int(np.clip(np.ceil((vals.max() - vals.min()) / (0.35 * std)), 12, 60))
+    return max(10, bins)
+
+
+def _refresh_on_operator_change(state_key: str, operator_name: str, clear_prefixes: list[str]) -> int:
+    prev_operator = st.session_state.get(state_key)
+    if prev_operator != operator_name:
+        st.session_state[state_key] = operator_name
+        for key in list(st.session_state.keys()):
+            if any(key.startswith(prefix) for prefix in clear_prefixes):
+                del st.session_state[key]
+        nonce_key = f"{state_key}_refresh_nonce"
+        st.session_state[nonce_key] = int(st.session_state.get(nonce_key, 0)) + 1
+    return int(st.session_state.get(f"{state_key}_refresh_nonce", 0))
 
 
 def _parse_math_number(token: str) -> float | None:
@@ -1415,6 +1449,12 @@ def render_state_feature_geometry_section() -> None:
         st.warning("Leaf max must be >= leaf min.")
         return
 
+    geometry_refresh_nonce = _refresh_on_operator_change(
+        state_key="geometry_operator_context",
+        operator_name="ExpMinusLog|ExpPlusLog|XMinusLog",
+        clear_prefixes=["geometry_matrix_", "geometry_edges_"],
+    )
+
     geo_df = _compute_operator_geometry(
         int(seed),
         int(n_starts),
@@ -1423,6 +1463,7 @@ def render_state_feature_geometry_section() -> None:
         int(depth),
         selector,
         int(per_op_cap),
+        int(geometry_refresh_nonce),
     )
     if geo_df.empty:
         st.info("No states generated for these settings.")
@@ -1562,7 +1603,19 @@ def render_state_feature_geometry_section() -> None:
     with cc4:
         cone_seed = st.number_input("Cone seed", min_value=0, max_value=10_000_000, value=12345, step=1)
 
-    cone_df, cone_edges = _compute_causal_projection(int(cone_seed), cone_op, int(cone_depth), selector, int(cone_leaf))
+    cone_refresh_nonce = _refresh_on_operator_change(
+        state_key="cone_operator_current",
+        operator_name=cone_op,
+        clear_prefixes=["cone_coords_", "cone_edges_", "cone_matrix_"],
+    )
+    cone_df, cone_edges = _compute_causal_projection(
+        int(cone_seed),
+        cone_op,
+        int(cone_depth),
+        selector,
+        int(cone_leaf),
+        int(cone_refresh_nonce),
+    )
     if not cone_df.empty:
         cone_fig = go.Figure()
         for layer in sorted(cone_df["layer"].unique()):
@@ -1828,10 +1881,14 @@ def render_terminal_entropy_section() -> None:
     )
 
     f1 = px.line(avg, x="layer", y="rich_entropy", color="operator", markers=True, title="Rich terminal entropy")
+    if not avg["rich_entropy"].empty:
+        f1.update_layout(yaxis_range=[0, float(avg["rich_entropy"].max()) * 1.05])
     st.plotly_chart(f1, use_container_width=True)
     f2 = px.line(avg, x="layer", y="norm_rich_entropy", color="operator", markers=True, title="Normalized rich entropy")
+    f2.update_layout(yaxis_range=[0, 1.05])
     st.plotly_chart(f2, use_container_width=True)
     f3 = px.line(avg, x="layer", y="rich_to_coarse_entropy_ratio", color="operator", markers=True, title="Rich/Coarse entropy ratio")
+    f3.update_layout(yaxis_range=[0, max(1.05, float(avg["rich_to_coarse_entropy_ratio"].max()) * 1.05)])
     st.plotly_chart(f3, use_container_width=True)
 
     op_pick = st.selectbox("Entropy coarse-vs-rich operator", ["ExpMinusLog", "ExpPlusLog", "XMinusLog"], index=0)
@@ -1850,6 +1907,9 @@ def render_terminal_entropy_section() -> None:
             markers=True,
             title=f"{op_pick}: coarse vs rich terminal entropy",
         )
+        if not op_avg["rich_entropy"].empty and not op_avg["coarse_entropy"].empty:
+            ymax = float(max(op_avg["rich_entropy"].max(), op_avg["coarse_entropy"].max()))
+            f4.update_layout(yaxis_range=[0, ymax * 1.05])
         st.plotly_chart(f4, use_container_width=True)
         f5 = px.line(
             op_avg.melt(
@@ -1865,6 +1925,18 @@ def render_terminal_entropy_section() -> None:
             title=f"{op_pick}: coarse vs rich dominance",
         )
         st.plotly_chart(f5, use_container_width=True)
+
+    terminal_layer = int(leverage["layer"].max())
+    terminal_width = leverage[leverage["layer"] == terminal_layer]["rich_entropy"].to_numpy(dtype=float)
+    bins = _safe_histogram_bins(terminal_width)
+    hist_fig = px.histogram(
+        x=terminal_width,
+        nbins=bins,
+        title=f"Geometric Width Distribution at Terminal Layer (layer={terminal_layer})",
+        labels={"x": "Rich terminal entropy", "y": "Count"},
+    )
+    hist_fig.update_layout(bargap=0.05)
+    st.plotly_chart(hist_fig, use_container_width=True)
 
     st.dataframe(avg.round(6), use_container_width=True)
     with st.expander("Raw leverage rows sample"):
@@ -1955,7 +2027,53 @@ def render_prediction_control_section(l2_reps: pd.DataFrame, is_real: bool) -> N
     bar.update_layout(yaxis_range=[0, 1])
     st.plotly_chart(bar, use_container_width=True)
 
+    # Lightweight significance diagnostics (normal approximation to two-tailed p-values).
+    comparisons = [
+        ("L2_Hist", "L2_Shuffled", "L2_Hist vs L2_Shuffled"),
+        ("L1_Shallow", "L2_Shuffled", "L1_Shallow vs L2_Shuffled"),
+    ]
+    stat_rows = []
+    for lhs, rhs, label in comparisons:
+        lhs_vals = reps[lhs].to_numpy(dtype=float)
+        rhs_vals = reps[rhs].to_numpy(dtype=float)
+        lhs_var = float(np.var(lhs_vals, ddof=1))
+        rhs_var = float(np.var(rhs_vals, ddof=1))
+        se = math.sqrt((lhs_var / max(1, len(lhs_vals))) + (rhs_var / max(1, len(rhs_vals))))
+        z_score = (float(lhs_vals.mean()) - float(rhs_vals.mean())) / se if se > 0 else 0.0
+        p_value = _normal_two_tailed_p_from_z(z_score)
+        stat_rows.append(
+            {
+                "comparison": label,
+                "mean_delta": float(lhs_vals.mean() - rhs_vals.mean()),
+                "z_score": float(z_score),
+                "p_value": float(p_value),
+                "significant": bool(p_value < 0.05),
+            }
+        )
+    stats_df = pd.DataFrame(stat_rows)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        row = stats_df.iloc[0]
+        status = "Significant" if bool(row["significant"]) else "Not significant"
+        color = "#16a34a" if bool(row["significant"]) else "#dc2626"
+        st.markdown(
+            f"<div style='font-weight:600'>{row['comparison']}</div>"
+            f"<div style='color:{color};font-size:1.05rem'>{status} (p={row['p_value']:.4f})</div>",
+            unsafe_allow_html=True,
+        )
+    with c2:
+        row = stats_df.iloc[1]
+        status = "Significant" if bool(row["significant"]) else "Not significant"
+        color = "#16a34a" if bool(row["significant"]) else "#dc2626"
+        st.markdown(
+            f"<div style='font-weight:600'>{row['comparison']}</div>"
+            f"<div style='color:{color};font-size:1.05rem'>{status} (p={row['p_value']:.4f})</div>",
+            unsafe_allow_html=True,
+        )
+
     st.dataframe(summary.round(6), use_container_width=True)
+    st.dataframe(stats_df.assign(p_value=stats_df["p_value"].map(lambda x: f"{x:.4f}")), use_container_width=True)
     with st.expander("Replicate table (20 runs)"):
         st.dataframe(reps.round(6), use_container_width=True)
 
