@@ -525,7 +525,11 @@ def _final_layer_states(start: object, op_func, depth: int, selector: str, rng: 
         nxt: list[object] = []
         for state in current:
             rewrites = _single_step_states(state, op_func)
-            nxt.extend(_select_events(rewrites, selector, rng))
+            if rewrites:
+                nxt.extend(_select_events(rewrites, selector, rng))
+            else:
+                # Treat dead-end states as terminal outcomes instead of dropping them.
+                nxt.append(state)
         current = list(dict.fromkeys(nxt))
         if not current:
             break
@@ -542,7 +546,11 @@ def _multiway_layers_with_edges(
         nxt: list[object] = []
         for parent in current:
             rewrites = _single_step_states(parent, op_func)
-            chosen = _select_events(rewrites, selector, rng)
+            if rewrites:
+                chosen = _select_events(rewrites, selector, rng)
+            else:
+                # Keep terminal parents alive as absorbing states in later layers.
+                chosen = [parent]
             nxt.extend(chosen)
             p_s = _ast_expr_to_string(parent)
             for child in chosen:
@@ -1113,8 +1121,38 @@ def page_header() -> None:
     st.set_page_config(page_title="Heartfield Explorer", page_icon=":milky_way:", layout="wide")
     st.title("Heartfield Geometry Explorer")
     st.caption(
-        "An interactive walkthrough from symbol rewrite idea to current experimental state."
+        "A step-by-step walkthrough of how the idea was developed, tested, and refined into its current form."
     )
+    st.info(
+        "Goal: make the full development story easy to follow, even if you are new to symbolic rewrite systems."
+    )
+
+
+def render_reader_guide() -> None:
+    st.subheader("How to Read This Site")
+    st.markdown(
+        """
+        1. **Start with the idea:** what problem Heartfield Geometry is trying to solve.
+        2. **Track the mechanism:** how rewrite dynamics expand and then reconverge.
+        3. **Check evidence:** which plots support each claim.
+        4. **Read the conclusion:** why the middle-resolution view is often best.
+        """
+    )
+    with st.expander("Plain-language glossary"):
+        st.markdown(
+            """
+            - **Rewrite dynamics:** a rule repeatedly transforms symbolic expressions into new expressions.
+            - **Expansion:** many possible next states appear ("explosion of possibility").
+            - **Reconvergence:** many branches collapse into fewer effective behaviors.
+            - **Resolution level:** how coarse or rich your state description is.
+            - **Terminal entropy:** how diverse end outcomes remain after unfolding dynamics.
+            """
+        )
+
+
+def render_section_bridge(title: str, explanation: str) -> None:
+    st.markdown(f"### {title}")
+    st.write(explanation)
 
 
 def sidebar_controls(source_count: int) -> tuple[int, str]:
@@ -1135,10 +1173,10 @@ def render_story(depth: int, selector: str) -> None:
     st.subheader("From Idea to Current State")
     st.markdown(
         f"""
-        - **Origin:** multiway symbolic rewrite inspired by Wolfram-style branchial dynamics and EML-style operator behavior.
-        - **Mechanism intuition:** exponential diversification (`Exp[...]`) plus logarithmic reconvergence (`-Log[...]`).
-        - **Current tested setting:** rewrite-anywhere trees, depth target `{depth}`, selector policy `{selector}`.
-        - **Practical thesis:** choose the right observational resolution, not simply the richest one.
+        - **Starting idea:** symbolic systems can create rich possibilities quickly, then settle into simpler structure.
+        - **Core operator intuition:** `Exp[...]` creates diversification pressure and `-Log[...]` creates reconvergence pressure.
+        - **Current experimental setup:** rewrite-anywhere trees, depth target `{depth}`, selector policy `{selector}`.
+        - **Main takeaway:** the most useful view is usually the **best middle resolution**, not the most detailed one.
         """
     )
 
@@ -1783,6 +1821,12 @@ def render_cone_averages_section() -> None:
         title="Rich / Old resolution ratio",
     )
     st.plotly_chart(ratio_fig, use_container_width=True)
+    ratio_series = pd.to_numeric(compression["rich_to_old_resolution_ratio"], errors="coerce").dropna()
+    if not ratio_series.empty and float(ratio_series.max() - ratio_series.min()) < 1e-9:
+        st.warning(
+            "Rich/old resolution ratio is currently flat across this run. "
+            "That means the selected settings are not separating coarse vs rich tuples."
+        )
 
     summary = _compute_operator_summary(compression)
     st.markdown("**Operator summary**")
@@ -1937,6 +1981,12 @@ def render_terminal_entropy_section() -> None:
     )
     hist_fig.update_layout(bargap=0.05)
     st.plotly_chart(hist_fig, use_container_width=True)
+    gap_series = pd.to_numeric(avg["norm_entropy_gap"], errors="coerce").dropna()
+    if not gap_series.empty and float(gap_series.abs().max()) < 1e-9:
+        st.warning(
+            "Normalized entropy gap is flat at 0 for this run. "
+            "This means coarse and rich entropy are behaving identically under current settings."
+        )
 
     st.dataframe(avg.round(6), use_container_width=True)
     with st.expander("Raw leverage rows sample"):
@@ -2192,21 +2242,71 @@ def main() -> None:
     page_header()
     data, sources = load_data()
     depth, selector = sidebar_controls(sum(sources.values()))
+    render_reader_guide()
+
+    st.divider()
+    st.header("Phase 1 - Idea and First Principles")
+    render_section_bridge(
+        "What was the original idea?",
+        "This section introduces the hypothesis: symbolic rewrite systems expand rapidly, then reconverge, and that reconvergence depends on observation scale.",
+    )
     render_story(depth, selector)
+
+    st.divider()
+    st.header("Phase 2 - Early Dynamics and Evidence")
+    render_section_bridge(
+        "What happens as the system evolves?",
+        "These plots show growth, spread, and first evidence that behavior changes with representation level.",
+    )
     render_lifecycle(data["lifecycle"], sources["lifecycle"])
     render_accuracy(data["accuracy"], sources["accuracy"])
     render_operator_trace_reconstruction(data["operator_traces"], sources["operator_traces"])
+
+    st.divider()
+    st.header("Phase 3 - Deriving the Heartfield Law")
+    render_section_bridge(
+        "How did the idea become a model?",
+        "Here the app converts trace behavior into fitted relationships and simulation updates, moving from concept to explicit equations.",
+    )
     render_heartfield_law_section(data["heartfield_diff"], data["persistence"])
     render_update_model_section(data["single_mode_rows"], data["rank_rows"], data["three_mode_rows"])
+
+    st.divider()
+    st.header("Phase 4 - Resolution Tests and Controls")
+    render_section_bridge(
+        "Which feature level actually works best?",
+        "Ablation and control analyses compare coarse, shallow, historical, and fully rich views to test predictive usefulness.",
+    )
     render_ablation_section(data["ablation_rows"], sources["ablation_rows"])
     render_prediction_control_section(data["l2_replicates"], sources["l2_replicates"])
+
+    st.divider()
+    st.header("Phase 5 - Geometry of Reconvergence")
+    render_section_bridge(
+        "Where do trajectories go in state-space?",
+        "These sections visualize neighborhoods, cones, and entropy so you can see reconvergence geometry rather than only reading summary statistics.",
+    )
     render_state_feature_geometry_section()
     render_cone_averages_section()
     render_terminal_entropy_section()
     render_tuple_ladder_section()
+
+    st.divider()
+    st.header("Phase 6 - Final Synthesis")
+    render_section_bridge(
+        "What does this mean in practical terms?",
+        "Final summaries combine divergence, 3D embedding, and resolution recommendation into a clear statement of the current model state.",
+    )
     render_coarse_vs_rich(data["coarse_rich"], sources["coarse_rich"])
     render_embedding_3d(data["embedding"], sources["embedding"])
     render_resolution_selector(data["accuracy"])
+
+    st.divider()
+    st.header("Traceability and Reproducibility")
+    render_section_bridge(
+        "How do we verify this development path?",
+        "The evidence gallery and schema contract make it clear how notebook artifacts map to the Python app and deployment data.",
+    )
     render_mathematica_evidence()
     render_data_contract()
 
